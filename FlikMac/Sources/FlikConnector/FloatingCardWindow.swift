@@ -53,6 +53,62 @@ public final class FloatingCardManager: @unchecked Sendable {
             self.activeWindows.removeAll()
         }
     }
+    
+    public var activeCardCount: Int {
+        activeWindows.count
+    }
+    
+    public func promptSaveAll() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, !self.activeWindows.isEmpty else { return }
+            
+            let panel = NSOpenPanel()
+            panel.canChooseFiles = false
+            panel.canChooseDirectories = true
+            panel.canCreateDirectories = true
+            panel.allowsMultipleSelection = false
+            panel.prompt = "Save All Here"
+            panel.title = "Save All Received Files"
+            panel.message = "Choose a destination folder to save all \(self.activeWindows.count) files"
+            
+            if panel.runModal() == .OK, let destinationURL = panel.url {
+                self.saveAll(to: destinationURL)
+            }
+        }
+    }
+    
+    public func saveAll(to destinationFolder: URL) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            var savedCount = 0
+            for (_, win) in self.activeWindows {
+                let src = win.fileURL
+                var dest = destinationFolder.appendingPathComponent(win.metadata.fileName)
+                if FileManager.default.fileExists(atPath: dest.path) {
+                    let ext = dest.pathExtension
+                    let base = dest.deletingPathExtension().lastPathComponent
+                    let timestamp = Int(Date().timeIntervalSince1970)
+                    dest = destinationFolder.appendingPathComponent("\(base)_\(timestamp).\(ext)")
+                }
+                
+                do {
+                    try FileManager.default.copyItem(at: src, to: dest)
+                    savedCount += 1
+                } catch {
+                    NSLog("Failed to save file: %@", error.localizedDescription)
+                }
+                
+                win.orderOut(nil)
+            }
+            
+            self.activeWindows.removeAll()
+            
+            if savedCount > 0 {
+                NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: destinationFolder.path)
+            }
+        }
+    }
 }
 
 // MARK: - Transient Bottom Portal Glow Window
@@ -311,6 +367,7 @@ public final class FloatingCardView: NSView, NSDraggingSource {
     // Content Views
     private let headerView = NSView()
     private let titleLabel = NSTextField(labelWithString: "")
+    private let saveAllButton = NSButton()
     private let closeButton = NSButton()
     private let previewImageView = NSImageView()
     private let footerView = NSView()
@@ -423,20 +480,35 @@ public final class FloatingCardView: NSView, NSDraggingSource {
         headerView.layer?.addSublayer(headerLine)
         
         // File Title
-        titleLabel.frame = NSRect(x: 14, y: 9, width: cBounds.width - 56, height: 20)
+        titleLabel.frame = NSRect(x: 12, y: 9, width: cBounds.width - 120, height: 20)
         titleLabel.stringValue = metadata.fileName
-        titleLabel.font = NSFont.systemFont(ofSize: 12.5, weight: .semibold)
+        titleLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
         titleLabel.textColor = .white
         titleLabel.lineBreakMode = .byTruncatingMiddle
         headerView.addSubview(titleLabel)
         
+        // Save All Button (Frosted Cyan Pill)
+        saveAllButton.frame = NSRect(x: cBounds.width - 106, y: 7, width: 72, height: 24)
+        saveAllButton.title = "💾 Save All"
+        saveAllButton.font = NSFont.systemFont(ofSize: 10, weight: .bold)
+        saveAllButton.isBordered = false
+        saveAllButton.wantsLayer = true
+        saveAllButton.layer?.cornerRadius = 12
+        saveAllButton.layer?.backgroundColor = NSColor(calibratedRed: 0.0, green: 0.96, blue: 1.0, alpha: 0.22).cgColor
+        saveAllButton.layer?.borderColor = NSColor(calibratedRed: 0.0, green: 0.96, blue: 1.0, alpha: 0.45).cgColor
+        saveAllButton.layer?.borderWidth = 0.5
+        saveAllButton.contentTintColor = .white
+        saveAllButton.target = self
+        saveAllButton.action = #selector(handleSaveAll)
+        headerView.addSubview(saveAllButton)
+        
         // Close Button (Frosted Circle ✕)
-        closeButton.frame = NSRect(x: cBounds.width - 32, y: 8, width: 22, height: 22)
+        closeButton.frame = NSRect(x: cBounds.width - 30, y: 7, width: 24, height: 24)
         closeButton.title = "✕"
-        closeButton.font = NSFont.systemFont(ofSize: 10.5, weight: .bold)
+        closeButton.font = NSFont.systemFont(ofSize: 11, weight: .bold)
         closeButton.isBordered = false
         closeButton.wantsLayer = true
-        closeButton.layer?.cornerRadius = 11
+        closeButton.layer?.cornerRadius = 12
         closeButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.18).cgColor
         closeButton.layer?.borderColor = NSColor.white.withAlphaComponent(0.25).cgColor
         closeButton.layer?.borderWidth = 0.5
@@ -581,7 +653,11 @@ public final class FloatingCardView: NSView, NSDraggingSource {
         onClose?()
     }
     
-    // Pass clicks through the transparent neon aura outside the card, and prioritize closeButton
+    @objc private func handleSaveAll() {
+        FloatingCardManager.shared.promptSaveAll()
+    }
+    
+    // Pass clicks through the transparent neon aura outside the card, and prioritize buttons
     public override func hitTest(_ point: NSPoint) -> NSView? {
         let pointInCard = cardContainer.convert(point, from: self)
         if !cardContainer.bounds.contains(pointInCard) {
@@ -590,8 +666,14 @@ public final class FloatingCardView: NSView, NSDraggingSource {
         
         // Priority 1: Instant reliable hit testing for close button (✕)
         let pointInClose = closeButton.convert(point, from: self)
-        if closeButton.bounds.insetBy(dx: -6, dy: -6).contains(pointInClose) {
+        if closeButton.bounds.insetBy(dx: -4, dy: -4).contains(pointInClose) {
             return closeButton
+        }
+        
+        // Priority 2: Save All Button
+        let pointInSave = saveAllButton.convert(point, from: self)
+        if saveAllButton.bounds.insetBy(dx: -4, dy: -4).contains(pointInSave) {
+            return saveAllButton
         }
         
         let hit = super.hitTest(point)
@@ -604,8 +686,15 @@ public final class FloatingCardView: NSView, NSDraggingSource {
         
         // Priority 1: Direct dismissal if close button was clicked
         let pointInClose = closeButton.convert(pointInView, from: self)
-        if closeButton.bounds.insetBy(dx: -6, dy: -6).contains(pointInClose) {
+        if closeButton.bounds.insetBy(dx: -4, dy: -4).contains(pointInClose) {
             handleClose()
+            return
+        }
+        
+        // Priority 2: Save All action
+        let pointInSave = saveAllButton.convert(pointInView, from: self)
+        if saveAllButton.bounds.insetBy(dx: -4, dy: -4).contains(pointInSave) {
+            handleSaveAll()
             return
         }
         

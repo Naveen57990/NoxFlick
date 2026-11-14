@@ -49,6 +49,10 @@ public final class StatusBarController: NSObject, @unchecked Sendable {
             showWindow.target = self
             menu.addItem(showWindow)
             
+            let flickToPhone = NSMenuItem(title: "Flick File to Phone...", action: #selector(self.flickToPhoneClicked), keyEquivalent: "f")
+            flickToPhone.target = self
+            menu.addItem(flickToPhone)
+            
             let togglePower = NSMenuItem(
                 title: FlikServer.shared.isRunning ? "Turn Receiver OFF" : "Turn Receiver ON",
                 action: #selector(self.togglePowerClicked),
@@ -58,6 +62,11 @@ public final class StatusBarController: NSObject, @unchecked Sendable {
             menu.addItem(togglePower)
             
             menu.addItem(NSMenuItem.separator())
+            
+            let saveAll = NSMenuItem(title: "Save All Received Cards...", action: #selector(self.saveAllClicked), keyEquivalent: "s")
+            saveAll.keyEquivalentModifierMask = [.command, .shift]
+            saveAll.target = self
+            menu.addItem(saveAll)
             
             let dismissAll = NSMenuItem(title: "Dismiss All Floating Cards", action: #selector(self.dismissAllClicked), keyEquivalent: "d")
             dismissAll.keyEquivalentModifierMask = [.option]
@@ -80,6 +89,30 @@ public final class StatusBarController: NSObject, @unchecked Sendable {
             
             self.statusItem?.menu = menu
         }
+    }
+    
+    @objc private func flickToPhoneClicked() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Flik to Phone"
+        panel.title = "Select File to Flick to Phone"
+        if panel.runModal() == .OK, let url = panel.url {
+            ReverseFlikClient.shared.sendFileToPhone(fileURL: url) { success, message in
+                DispatchQueue.main.async {
+                    let alert = NSAlert()
+                    alert.messageText = success ? "🚀 Flicked to Phone!" : "❌ Reverse Flick Failed"
+                    alert.informativeText = message
+                    alert.alertStyle = success ? .informational : .warning
+                    alert.runModal()
+                }
+            }
+        }
+    }
+    
+    @objc private func saveAllClicked() {
+        FloatingCardManager.shared.promptSaveAll()
     }
     
     @objc private func showWindowClicked() {

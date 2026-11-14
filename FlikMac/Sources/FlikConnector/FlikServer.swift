@@ -123,6 +123,22 @@ public final class FlikServer: @unchecked Sendable {
     private func handleIncomingConnection(_ connection: NWConnection) {
         connection.start(queue: .global(qos: .userInitiated))
         
+        var clientIP = ""
+        if let endpoint = connection.currentPath?.remoteEndpoint {
+            switch endpoint {
+            case .hostPort(let host, _):
+                switch host {
+                case .ipv4(let addr): clientIP = "\(addr)"
+                case .ipv6(let addr): clientIP = "\(addr)"
+                default: clientIP = "\(host)"
+                }
+                if !clientIP.isEmpty && clientIP != "127.0.0.1" && clientIP != "::1" {
+                    ReverseFlikClient.shared.recordPhoneActivity(ip: clientIP)
+                }
+            default: break
+            }
+        }
+        
         var requestBuffer = Data()
         var headersParsed = false
         var method = ""
@@ -172,6 +188,18 @@ public final class FlikServer: @unchecked Sendable {
                                     "deviceName": Host.current().localizedName ?? "MacBook",
                                     "version": "1.0"
                                 ])
+                                return
+                            } else if path == "/save-all" {
+                                DispatchQueue.main.async {
+                                    FloatingCardManager.shared.promptSaveAll()
+                                }
+                                self.respondOK(connection: connection, json: ["status": "ok"])
+                                return
+                            } else if path == "/dismiss-all" {
+                                DispatchQueue.main.async {
+                                    FloatingCardManager.shared.closeAll(deleteFiles: true)
+                                }
+                                self.respondOK(connection: connection, json: ["status": "ok"])
                                 return
                             } else if path == "/pair" {
                                 self.respondOK(connection: connection, json: [
@@ -230,6 +258,9 @@ public final class FlikServer: @unchecked Sendable {
                                     aimX = angle / 30.0
                                 }
                                 let sender = headers["x-sender-name"] ?? "Android"
+                                if !clientIP.isEmpty && clientIP != "127.0.0.1" {
+                                    ReverseFlikClient.shared.recordPhoneActivity(ip: clientIP, name: sender)
+                                }
                                 
                                 metadata = FlickMetadata(
                                     fileName: cleanFileName,

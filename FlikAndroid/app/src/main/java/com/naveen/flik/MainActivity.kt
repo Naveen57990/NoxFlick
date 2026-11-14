@@ -1,11 +1,16 @@
 package com.naveen.flik
 
 import android.annotation.SuppressLint
+import android.content.Context
+import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.view.MotionEvent
@@ -20,10 +25,12 @@ import androidx.lifecycle.lifecycleScope
 import com.naveen.flik.databinding.ActivityMainBinding
 import com.naveen.flik.discovery.DiscoveredMac
 import com.naveen.flik.discovery.NsdDiscoveryManager
+import com.naveen.flik.network.FlikPhoneServer
 import com.naveen.flik.network.FlikTransferClient
 import com.naveen.flik.sensors.FlickMotionDetector
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import java.io.File
 
 class MainActivity : AppCompatActivity() {
 
@@ -31,6 +38,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var discoveryManager: NsdDiscoveryManager
     private lateinit var transferClient: FlikTransferClient
     private lateinit var motionDetector: FlickMotionDetector
+    private lateinit var phoneServer: FlikPhoneServer
 
     private var selectedDevice: DiscoveredMac? = null
     private var selectedUris = mutableListOf<Uri>()
@@ -66,6 +74,13 @@ class MainActivity : AppCompatActivity() {
 
         discoveryManager = NsdDiscoveryManager(this)
         transferClient = FlikTransferClient(this)
+
+        // Start reverse flick phone server (listen for files from Mac)
+        phoneServer = FlikPhoneServer(this) { file, mimeType ->
+            onFileReceivedFromMac(file, mimeType)
+        }
+        phoneServer.start()
+        discoveryManager.registerPhoneService(phoneServer.port)
 
         setupUI()
         setupSensors()
@@ -326,9 +341,53 @@ class MainActivity : AppCompatActivity() {
         return name
     }
 
+    private fun onFileReceivedFromMac(file: File, mimeType: String) {
+        playFlickSound()
+
+        // Haptic pulse feedback
+        try {
+            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vm = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+                vm.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 100, 80, 120), -1))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(150)
+            }
+        } catch (e: Exception) {
+            // Ignored
+        }
+
+        binding.tvStatus.text = "🎉 Received from Mac: ${file.name}"
+        Toast.makeText(this, "📥 Received from Mac: ${file.name}", Toast.LENGTH_LONG).show()
+
+        // Display received thumbnail preview if image
+        if (mimeType.startsWith("image/") || file.extension.lowercase() in listOf("jpg", "jpeg", "png", "webp")) {
+            try {
+                val bitmap = BitmapFactory.decodeFile(file.absolutePath)
+                binding.ivPreview.setImageBitmap(bitmap)
+                binding.ivPreview.visibility = View.VISIBLE
+                binding.layoutEmptyState.visibility = View.GONE
+                binding.layoutCardBottom.visibility = View.VISIBLE
+                binding.tvFileName.text = file.name
+            } catch (e: Exception) {
+                // Fallback
+            }
+        }
+    }
+
     override fun onResume() {
         super.onResume()
+        if (!phoneServer.isAlive()) {
+            phoneServer.start()
+        }
         discoveryManager.startDiscovery()
+        discoveryManager.registerPhoneService(phoneServer.port)
         motionDetector.startListening()
     }
 
@@ -336,5 +395,13 @@ class MainActivity : AppCompatActivity() {
         super.onPause()
         discoveryManager.stopDiscovery()
         motionDetector.stopListening()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        phoneServer.stop()
+        discoveryManager.unregisterPhoneService()
+        mediaPlayer?.release()
+        mediaPlayer = null
     }
 }

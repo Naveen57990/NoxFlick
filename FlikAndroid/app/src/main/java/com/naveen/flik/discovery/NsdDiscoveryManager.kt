@@ -3,6 +3,7 @@ package com.naveen.flik.discovery
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.os.Build
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -96,6 +97,56 @@ class NsdDiscoveryManager(private val context: Context) {
         } catch (e: Exception) {
             Log.e(tag, "Resolve invocation failed", e)
         }
+    }
+
+    private var registrationListener: NsdManager.RegistrationListener? = null
+    private var isRegistered = false
+
+    fun registerPhoneService(port: Int = 52841) {
+        if (isRegistered) return
+        val serviceInfo = NsdServiceInfo().apply {
+            serviceName = "${Build.MANUFACTURER} ${Build.MODEL}"
+            serviceType = "_flick_phone._tcp."
+            setPort(port)
+        }
+
+        registrationListener = object : NsdManager.RegistrationListener {
+            override fun onServiceRegistered(NsdServiceInfo: NsdServiceInfo?) {
+                Log.d(tag, "Phone service registered: ${NsdServiceInfo?.serviceName}")
+                isRegistered = true
+            }
+
+            override fun onRegistrationFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) {
+                Log.e(tag, "Registration failed: $errorCode")
+                isRegistered = false
+            }
+
+            override fun onServiceUnregistered(arg0: NsdServiceInfo?) {
+                Log.d(tag, "Phone service unregistered")
+                isRegistered = false
+            }
+
+            override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) {
+                Log.e(tag, "Unregistration failed: $errorCode")
+            }
+        }
+
+        try {
+            nsdManager.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, registrationListener)
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to register phone service", e)
+        }
+    }
+
+    fun unregisterPhoneService() {
+        if (!isRegistered) return
+        try {
+            registrationListener?.let { nsdManager.unregisterService(it) }
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to unregister phone service", e)
+        }
+        registrationListener = null
+        isRegistered = false
     }
 
     fun stopDiscovery() {
