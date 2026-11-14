@@ -1,0 +1,22 @@
+# Build outputs
+.build/
+build/
+app/build/
+.gradle/
+*.class
+*.hprof
+*.pyc
+*.app/
+*.app
+
+# IDE & OS
+.DS_Store
+.idea/
+*.iml
+.vscode/
+local.properties
+.kotlin/
+
+# User data
+Downloads/
+*.log

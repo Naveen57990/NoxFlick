@@ -1,0 +1,15 @@
+<resources>
+    <style name="Theme.Flik" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="android:statusBarColor">#0C0D14</item>
+        <item name="android:navigationBarColor">#0C0D14</item>
+        <item name="android:windowBackground">#0C0D14</item>
+        <item name="colorPrimary">#7C3AED</item>
+        <item name="colorSecondary">#06B6D4</item>
+    </style>
+
+    <style name="Theme.Flik.Transparent" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowAnimationStyle">@android:style/Animation.Dialog</item>
+    </style>
+</resources>
