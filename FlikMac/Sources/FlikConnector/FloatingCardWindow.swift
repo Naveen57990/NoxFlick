@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import QuickLookThumbnailing
+import QuartzCore
 
 private extension Comparable {
     func clamped(to limits: ClosedRange<Self>) -> Self {
@@ -8,6 +9,7 @@ private extension Comparable {
     }
 }
 
+// MARK: - Manager for Active Floating Cards
 public final class FloatingCardManager: @unchecked Sendable {
     public static let shared = FloatingCardManager()
     
@@ -16,6 +18,7 @@ public final class FloatingCardManager: @unchecked Sendable {
     private init() {}
     
     public func showCard(fileURL: URL, metadata: FlickMetadata) {
+        NSLog("🎴 [NoxFlick] FloatingCardManager.showCard called for: %@", fileURL.path)
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
@@ -30,6 +33,7 @@ public final class FloatingCardManager: @unchecked Sendable {
     }
     
     public func removeCard(id: UUID) {
+        NSLog("🗑️ [NoxFlick] removeCard called for id: %@", id.uuidString)
         DispatchQueue.main.async { [weak self] in
             if let win = self?.activeWindows.removeValue(forKey: id) {
                 win.orderOut(nil)
@@ -51,6 +55,91 @@ public final class FloatingCardManager: @unchecked Sendable {
     }
 }
 
+// MARK: - Transient Bottom Portal Glow Window
+public final class PortalGlowWindow: NSPanel {
+    private let flareView = PortalFlareView()
+    
+    public init(centerX: CGFloat, bottomY: CGFloat) {
+        let width: CGFloat = 380
+        let height: CGFloat = 110
+        let frame = NSRect(x: centerX - width / 2, y: bottomY, width: width, height: height)
+        
+        super.init(
+            contentRect: frame,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        
+        self.isFloatingPanel = true
+        self.level = .floating
+        self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        self.backgroundColor = .clear
+        self.isOpaque = false
+        self.hasShadow = false
+        self.ignoresMouseEvents = true
+        self.contentView = flareView
+    }
+    
+    public func bloomAndDissipate(completion: (() -> Void)? = nil) {
+        self.alphaValue = 0.0
+        self.orderFrontRegardless()
+        
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.12
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            self.animator().alphaValue = 0.95
+        }, completionHandler: {
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = 0.42
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                self.animator().alphaValue = 0.0
+            }, completionHandler: {
+                self.orderOut(nil)
+                completion?()
+            })
+        })
+    }
+}
+
+// MARK: - Atmospheric Radial Flare View
+public final class PortalFlareView: NSView {
+    public override init(frame: NSRect) {
+        super.init(frame: frame)
+        self.wantsLayer = true
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    public override func draw(_ dirtyRect: NSRect) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        
+        let colors = [
+            NSColor(calibratedRed: 0.0, green: 0.96, blue: 1.0, alpha: 0.85).cgColor,  // Pure Cyan Core
+            NSColor(calibratedRed: 0.54, green: 0.23, blue: 0.98, alpha: 0.55).cgColor, // Electric Violet
+            NSColor(calibratedRed: 0.06, green: 0.07, blue: 0.12, alpha: 0.0).cgColor   // Transparent
+        ] as CFArray
+        let locations: [CGFloat] = [0.0, 0.42, 1.0]
+        
+        guard let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: locations) else { return }
+        
+        ctx.saveGState()
+        let radius = bounds.width * 0.45
+        ctx.scaleBy(x: 1.0, y: bounds.height / (bounds.width * 0.45))
+        ctx.drawRadialGradient(
+            gradient,
+            startCenter: CGPoint(x: bounds.midX, y: 0),
+            startRadius: 0,
+            endCenter: CGPoint(x: bounds.midX, y: 0),
+            endRadius: radius,
+            options: [.drawsAfterEndLocation]
+        )
+        ctx.restoreGState()
+    }
+}
+
 // MARK: - Floating Card Window
 public final class FloatingCardWindow: NSPanel {
     public let id: UUID
@@ -58,10 +147,13 @@ public final class FloatingCardWindow: NSPanel {
     public let metadata: FlickMetadata
     private let onDismiss: () -> Void
     private let cardView: FloatingCardView
+    private var portalWindow: PortalGlowWindow?
     
-    private let windowWidth: CGFloat = 380
-    private let windowHeight: CGFloat = 420
+    private let windowWidth: CGFloat = 440
+    private let windowHeight: CGFloat = 480
     private var targetOrigin: NSPoint = .zero
+    private var initialX: CGFloat = 0
+    private var entryY: CGFloat = 0
     
     public init(id: UUID, fileURL: URL, metadata: FlickMetadata, onDismiss: @escaping () -> Void) {
         self.id = id
@@ -72,32 +164,30 @@ public final class FloatingCardWindow: NSPanel {
         let screen = NSScreen.main ?? NSScreen.screens.first!
         let visibleFrame = screen.visibleFrame
         
-        // Calculate true landing position based on where user aimed!
-        // aimX: -1.0 (left side of screen), 0 (center), +1.0 (right side of screen)
+        // Calculate true physical landing position based on aim angle and velocity
         let normalizedAim = metadata.aimX.clamped(to: -1.0...1.0)
         let aimRatio = (normalizedAim + 1.0) / 2.0 // 0.0 to 1.0
         
-        let screenMarginX: CGFloat = 30
+        let screenMarginX: CGFloat = 40
         let availableWidth = max(0, visibleFrame.width - (screenMarginX * 2) - windowWidth)
         let targetX = visibleFrame.minX + screenMarginX + (availableWidth * CGFloat(aimRatio))
         
-        // Vertical landing height based on throw velocity:
-        // Soft throw (~0.8 - 1.2) = lands lower down (~visibleFrame.minY + 50)
-        // Hard throw (~2.0 - 2.6) = lands higher up (~visibleFrame.maxY - windowHeight - 50)
+        // Vertical landing height based on throw velocity
         let clampedVel = metadata.flickVelocity.clamped(to: 0.8...2.5)
         let velRatio = (clampedVel - 0.8) / (2.5 - 0.8) // 0.0 to 1.0
-        let screenMarginY: CGFloat = 40
+        let screenMarginY: CGFloat = 50
         let availableHeight = max(0, visibleFrame.height - (screenMarginY * 2) - windowHeight)
         let targetY = visibleFrame.minY + screenMarginY + (availableHeight * CGFloat(velRatio))
         
         self.targetOrigin = NSPoint(x: targetX, y: targetY)
         
-        // Flight entry trajectory: starts below screen edge aligned with throw trajectory
+        // Flight entry trajectory: starts below screen edge aligned with throw vector
         let flyAngleRad = (metadata.flickAngle.clamped(to: -35...35)) * .pi / 180.0
-        let trajectoryXOffset = CGFloat(tan(flyAngleRad) * 160.0)
+        let trajectoryXOffset = CGFloat(tan(flyAngleRad) * 180.0)
         let minXBound = visibleFrame.minX
         let maxXBound = max(visibleFrame.minX, visibleFrame.maxX - windowWidth)
-        let initialX = (targetX - trajectoryXOffset).clamped(to: minXBound...maxXBound)
+        self.initialX = (targetX - trajectoryXOffset).clamped(to: minXBound...maxXBound)
+        self.entryY = visibleFrame.minY
         let initialY = visibleFrame.minY - windowHeight - 40
         
         let initialRect = NSRect(
@@ -141,22 +231,36 @@ public final class FloatingCardWindow: NSPanel {
     }
     
     public func animateFlightEntrance() {
+        NSLog("🚀 [NoxFlick] animateFlightEntrance targetOrigin: (%f, %f)", targetOrigin.x, targetOrigin.y)
         self.alphaValue = 0.0
         self.orderFrontRegardless()
         
-        // Rotate the card container inside the spacious window so corners never clip!
+        // 1. Play sound chime with stereo panning (aimX) and capped 50% max volume
+        SoundManager.shared.playArrivalChime(aimX: metadata.aimX)
+        
+        // 2. Trigger bottom bezel entrance portal flare
+        let portalCenter = self.initialX + (windowWidth / 2)
+        let portal = PortalGlowWindow(centerX: portalCenter, bottomY: self.entryY)
+        self.portalWindow = portal
+        portal.bloomAndDissipate { [weak self] in
+            self?.portalWindow = nil
+        }
+        
+        // 3. Rotate card with physics throw tilt
         let angle = CGFloat(metadata.flickAngle.clamped(to: -30...30))
         cardView.setRotationAngle(angle)
         
         let targetRect = NSRect(origin: self.targetOrigin, size: CGSize(width: windowWidth, height: windowHeight))
         
-        // Smooth physics-based flight arrival: flies up from bottom to target position
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.45
-            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.15, 0.85, 0.25, 1.0)
+        // 4. Smooth flight arrival curve (Apple fluid spring curve)
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.48
+            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
             self.animator().alphaValue = 1.0
             self.animator().setFrame(targetRect, display: true)
-        }
+        }, completionHandler: { [weak self] in
+            self?.cardView.pulseLandingGlow()
+        })
     }
     
     public func dismissCard(deleteFile: Bool) {
@@ -164,7 +268,8 @@ public final class FloatingCardWindow: NSPanel {
             try? FileManager.default.removeItem(at: fileURL)
         }
         NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.18
+            ctx.duration = 0.20
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
             self.animator().alphaValue = 0.0
         }, completionHandler: {
             self.orderOut(nil)
@@ -173,7 +278,7 @@ public final class FloatingCardWindow: NSPanel {
     }
 }
 
-// MARK: - Floating Card View
+// MARK: - Premium Floating Card View with Multi-Tier Neon Glow
 public final class FloatingCardView: NSView, NSDraggingSource {
     public weak var cardWindow: FloatingCardWindow?
     public let fileURL: URL
@@ -182,17 +287,33 @@ public final class FloatingCardView: NSView, NSDraggingSource {
     public var onClose: (() -> Void)?
     public var onDropped: (() -> Void)?
     
+    // Core container hierarchy
+    private let rotatableRootView = NSView()
+    private let glowBackdropView = NSView()
     private let cardContainer = NSView()
+    private let glassEffectView = NSVisualEffectView()
+    private let borderOverlayView = NSView()
+    private let borderLayer = CAGradientLayer()
+    private let borderShapeMask = CAShapeLayer()
+    
+    // Sublayer glows
+    private let ambientBloomLayer = CALayer()
+    private let rimGlowLayer = CALayer()
+    private let dropShadowLayer = CALayer()
+    
+    // Content Views
     private let headerView = NSView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let closeButton = NSButton()
     private let previewImageView = NSImageView()
     private let footerView = NSView()
+    private let sizeBadgeView = NSView()
     private let sizeLabel = NSTextField(labelWithString: "")
     private let dragHintLabel = NSTextField(labelWithString: "")
     
-    private let cardWidth: CGFloat = 250
-    private let cardHeight: CGFloat = 320
+    private let cardWidth: CGFloat = 260
+    private let cardHeight: CGFloat = 330
+    private let cornerRadius: CGFloat = 18
     
     private var dragStartWindowOrigin: NSPoint = .zero
     private var initialMouseLocation: NSPoint = .zero
@@ -213,84 +334,212 @@ public final class FloatingCardView: NSView, NSDraggingSource {
     }
     
     public func setRotationAngle(_ angle: CGFloat) {
-        cardContainer.frameCenterRotation = angle
+        rotatableRootView.frameCenterRotation = angle
+    }
+    
+    public func pulseLandingGlow() {
+        let pulseAnim = CABasicAnimation(keyPath: "shadowOpacity")
+        pulseAnim.fromValue = 0.95
+        pulseAnim.toValue = 0.55
+        pulseAnim.duration = 0.65
+        pulseAnim.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        ambientBloomLayer.add(pulseAnim, forKey: "pulse")
+        
+        let rimPulse = CABasicAnimation(keyPath: "shadowOpacity")
+        rimPulse.fromValue = 0.90
+        rimPulse.toValue = 0.65
+        rimPulse.duration = 0.65
+        rimPulse.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        rimGlowLayer.add(rimPulse, forKey: "rimPulse")
     }
     
     private func setupViews() {
-        // Center the 250x320 card inside the 340x400 window so rotations up to 35 deg NEVER clip
-        let cardOriginX = (bounds.width - cardWidth) / 2
-        let cardOriginY = (bounds.height - cardHeight) / 2
-        cardContainer.frame = NSRect(x: cardOriginX, y: cardOriginY, width: cardWidth, height: cardHeight)
-        cardContainer.wantsLayer = true
-        cardContainer.layer?.cornerRadius = 16
-        cardContainer.layer?.masksToBounds = true
-        cardContainer.layer?.backgroundColor = NSColor(calibratedRed: 0.08, green: 0.09, blue: 0.14, alpha: 0.95).cgColor
-        cardContainer.layer?.borderColor = NSColor(calibratedRed: 0.49, green: 0.23, blue: 0.93, alpha: 0.8).cgColor
-        cardContainer.layer?.borderWidth = 1.5
-        addSubview(cardContainer)
+        // 1. Center the rotatable root view inside the spacious 440x480 canvas
+        let rootOriginX = (bounds.width - cardWidth) / 2
+        let rootOriginY = (bounds.height - cardHeight) / 2
+        let rootFrame = NSRect(x: rootOriginX, y: rootOriginY, width: cardWidth, height: cardHeight)
         
-        // Deep Card Shadow
-        self.shadow = NSShadow()
-        self.shadow?.shadowColor = NSColor.black.withAlphaComponent(0.65)
-        self.shadow?.shadowOffset = NSSize(width: 0, height: -8)
-        self.shadow?.shadowBlurRadius = 22
+        rotatableRootView.frame = rootFrame
+        rotatableRootView.wantsLayer = true
+        addSubview(rotatableRootView)
+        
+        // 2. Multi-tier Atmospheric Neon Glow Backdrop (outside masksToBounds)
+        glowBackdropView.frame = NSRect(origin: .zero, size: rootFrame.size)
+        glowBackdropView.wantsLayer = true
+        glowBackdropView.layer?.masksToBounds = false
+        rotatableRootView.addSubview(glowBackdropView)
+        
+        setupNeonGlowLayers(for: glowBackdropView.layer!)
+        
+        // 3. Card Container with Frosted Glass & Obsidian Core
+        cardContainer.frame = NSRect(origin: .zero, size: rootFrame.size)
+        cardContainer.wantsLayer = true
+        cardContainer.layer?.cornerRadius = cornerRadius
+        cardContainer.layer?.masksToBounds = true
+        rotatableRootView.addSubview(cardContainer)
+        
+        // Live macOS frosted glass blur
+        glassEffectView.frame = cardContainer.bounds
+        glassEffectView.autoresizingMask = [.width, .height]
+        glassEffectView.blendingMode = .behindWindow
+        glassEffectView.material = .hudWindow
+        glassEffectView.state = .active
+        cardContainer.addSubview(glassEffectView)
+        
+        // Deep obsidian tint overlay
+        let tintView = NSView(frame: cardContainer.bounds)
+        tintView.autoresizingMask = [.width, .height]
+        tintView.wantsLayer = true
+        tintView.layer?.backgroundColor = NSColor(calibratedRed: 0.07, green: 0.08, blue: 0.13, alpha: 0.88).cgColor
+        cardContainer.addSubview(tintView)
         
         let cBounds = cardContainer.bounds
         
-        // 1. Header Bar (Height 36)
-        headerView.frame = NSRect(x: 0, y: cBounds.height - 36, width: cBounds.width, height: 36)
+        // 4. Preview Image View (Middle)
+        let previewY: CGFloat = 34
+        let previewH: CGFloat = cBounds.height - 38 - 34
+        previewImageView.frame = NSRect(x: 0, y: previewY, width: cBounds.width, height: previewH)
+        previewImageView.imageScaling = .scaleProportionallyUpOrDown
+        previewImageView.wantsLayer = true
+        previewImageView.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.15).cgColor
+        cardContainer.addSubview(previewImageView)
+        
+        // 5. Header Bar (Frosted Translucent)
+        headerView.frame = NSRect(x: 0, y: cBounds.height - 38, width: cBounds.width, height: 38)
         headerView.wantsLayer = true
-        headerView.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.45).cgColor
+        headerView.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.35).cgColor
         cardContainer.addSubview(headerView)
         
+        let headerLine = CALayer()
+        headerLine.frame = CGRect(x: 0, y: 0, width: cBounds.width, height: 0.5)
+        headerLine.backgroundColor = NSColor.white.withAlphaComponent(0.08).cgColor
+        headerView.layer?.addSublayer(headerLine)
+        
         // File Title
-        titleLabel.frame = NSRect(x: 12, y: 8, width: cBounds.width - 50, height: 20)
+        titleLabel.frame = NSRect(x: 14, y: 9, width: cBounds.width - 56, height: 20)
         titleLabel.stringValue = metadata.fileName
-        titleLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        titleLabel.font = NSFont.systemFont(ofSize: 12.5, weight: .semibold)
         titleLabel.textColor = .white
         titleLabel.lineBreakMode = .byTruncatingMiddle
         headerView.addSubview(titleLabel)
         
-        // Close Button (✕)
-        closeButton.frame = NSRect(x: cBounds.width - 32, y: 7, width: 22, height: 22)
+        // Close Button (Frosted Circle ✕)
+        closeButton.frame = NSRect(x: cBounds.width - 32, y: 8, width: 22, height: 22)
         closeButton.title = "✕"
-        closeButton.font = NSFont.systemFont(ofSize: 11, weight: .bold)
+        closeButton.font = NSFont.systemFont(ofSize: 10.5, weight: .bold)
         closeButton.isBordered = false
         closeButton.wantsLayer = true
         closeButton.layer?.cornerRadius = 11
-        closeButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.2).cgColor
+        closeButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.18).cgColor
+        closeButton.layer?.borderColor = NSColor.white.withAlphaComponent(0.25).cgColor
+        closeButton.layer?.borderWidth = 0.5
         closeButton.contentTintColor = .white
         closeButton.target = self
         closeButton.action = #selector(handleClose)
         headerView.addSubview(closeButton)
         
-        // 2. Footer Bar (Height 32)
-        footerView.frame = NSRect(x: 0, y: 0, width: cBounds.width, height: 32)
+        // 6. Footer Bar (Frosted Glass)
+        footerView.frame = NSRect(x: 0, y: 0, width: cBounds.width, height: 34)
         footerView.wantsLayer = true
-        footerView.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.45).cgColor
+        footerView.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.35).cgColor
         cardContainer.addSubview(footerView)
         
-        sizeLabel.frame = NSRect(x: 12, y: 6, width: 90, height: 20)
-        sizeLabel.stringValue = formatBytes(metadata.fileSize)
-        sizeLabel.font = NSFont.systemFont(ofSize: 11)
-        sizeLabel.textColor = NSColor.white.withAlphaComponent(0.6)
-        footerView.addSubview(sizeLabel)
+        let footerLine = CALayer()
+        footerLine.frame = CGRect(x: 0, y: 33.5, width: cBounds.width, height: 0.5)
+        footerLine.backgroundColor = NSColor.white.withAlphaComponent(0.08).cgColor
+        footerView.layer?.addSublayer(footerLine)
         
-        dragHintLabel.frame = NSRect(x: cBounds.width - 110, y: 6, width: 98, height: 20)
+        // Size Badge
+        sizeBadgeView.frame = NSRect(x: 12, y: 7, width: 84, height: 20)
+        sizeBadgeView.wantsLayer = true
+        sizeBadgeView.layer?.cornerRadius = 6
+        sizeBadgeView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.08).cgColor
+        footerView.addSubview(sizeBadgeView)
+        
+        sizeLabel.frame = NSRect(x: 4, y: 2, width: 76, height: 16)
+        sizeLabel.stringValue = formatBytes(metadata.fileSize)
+        sizeLabel.alignment = .center
+        sizeLabel.font = NSFont.systemFont(ofSize: 10.5, weight: .medium)
+        sizeLabel.textColor = NSColor.white.withAlphaComponent(0.75)
+        sizeBadgeView.addSubview(sizeLabel)
+        
+        // Luminous Neon Drag Hint
+        dragHintLabel.frame = NSRect(x: cBounds.width - 120, y: 7, width: 108, height: 20)
         dragHintLabel.stringValue = "Drag to save ➔"
         dragHintLabel.alignment = .right
-        dragHintLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        dragHintLabel.textColor = NSColor(calibratedRed: 0.02, green: 0.71, blue: 0.83, alpha: 1.0)
+        dragHintLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        dragHintLabel.textColor = NSColor(calibratedRed: 0.0, green: 0.96, blue: 1.0, alpha: 1.0)
         footerView.addSubview(dragHintLabel)
         
-        // 3. Preview Image View (Middle)
-        let previewY: CGFloat = 32
-        let previewH: CGFloat = cBounds.height - 36 - 32
-        previewImageView.frame = NSRect(x: 0, y: previewY, width: cBounds.width, height: previewH)
-        previewImageView.imageScaling = .scaleProportionallyUpOrDown
-        previewImageView.wantsLayer = true
-        previewImageView.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.2).cgColor
-        cardContainer.addSubview(previewImageView)
+        // 7. Top-most Iridescent Neon Border Overlay (unobstructed by header/footer)
+        borderOverlayView.frame = cardContainer.bounds
+        borderOverlayView.autoresizingMask = [.width, .height]
+        borderOverlayView.wantsLayer = true
+        cardContainer.addSubview(borderOverlayView)
+        setupIridescentBorder()
+    }
+    
+    private func setupNeonGlowLayers(for hostLayer: CALayer) {
+        let roundedPath = CGPath(roundedRect: CGRect(origin: .zero, size: CGSize(width: cardWidth, height: cardHeight)),
+                                 cornerWidth: cornerRadius,
+                                 cornerHeight: cornerRadius,
+                                 transform: nil)
+        
+        // Layer 1: Ground Elevation Shadow
+        dropShadowLayer.frame = CGRect(origin: .zero, size: CGSize(width: cardWidth, height: cardHeight))
+        dropShadowLayer.shadowPath = roundedPath
+        dropShadowLayer.shadowColor = NSColor.black.cgColor
+        dropShadowLayer.shadowRadius = 24
+        dropShadowLayer.shadowOpacity = 0.65
+        dropShadowLayer.shadowOffset = CGSize(width: 0, height: -8)
+        hostLayer.addSublayer(dropShadowLayer)
+        
+        // Layer 2: Atmospheric Deep Violet Neon Bloom
+        ambientBloomLayer.frame = CGRect(origin: .zero, size: CGSize(width: cardWidth, height: cardHeight))
+        ambientBloomLayer.shadowPath = roundedPath
+        ambientBloomLayer.shadowColor = NSColor(calibratedRed: 0.55, green: 0.22, blue: 0.98, alpha: 1.0).cgColor
+        ambientBloomLayer.shadowRadius = 36
+        ambientBloomLayer.shadowOpacity = 0.60
+        ambientBloomLayer.shadowOffset = CGSize(width: 0, height: -2)
+        hostLayer.addSublayer(ambientBloomLayer)
+        
+        // Layer 3: Crisp Electric Cyan Inner Rim Radiance
+        rimGlowLayer.frame = CGRect(origin: .zero, size: CGSize(width: cardWidth, height: cardHeight))
+        rimGlowLayer.shadowPath = roundedPath
+        rimGlowLayer.shadowColor = NSColor(calibratedRed: 0.0, green: 0.96, blue: 1.0, alpha: 1.0).cgColor
+        rimGlowLayer.shadowRadius = 15
+        rimGlowLayer.shadowOpacity = 0.80
+        rimGlowLayer.shadowOffset = .zero
+        hostLayer.addSublayer(rimGlowLayer)
+    }
+    
+    private func setupIridescentBorder() {
+        let cardRect = CGRect(origin: .zero, size: CGSize(width: cardWidth, height: cardHeight))
+        
+        borderLayer.frame = cardRect
+        borderLayer.colors = [
+            NSColor(calibratedRed: 0.0, green: 0.96, blue: 1.0, alpha: 0.95).cgColor,   // Electric Cyan
+            NSColor(calibratedRed: 0.23, green: 0.51, blue: 0.96, alpha: 0.90).cgColor,  // Royal Azure
+            NSColor(calibratedRed: 0.58, green: 0.28, blue: 0.98, alpha: 0.95).cgColor,  // Neon Violet
+            NSColor(calibratedRed: 0.96, green: 0.25, blue: 0.65, alpha: 0.90).cgColor,  // Electric Magenta
+            NSColor(calibratedRed: 0.0, green: 0.96, blue: 1.0, alpha: 0.95).cgColor    // Loop back to Cyan
+        ]
+        borderLayer.startPoint = CGPoint(x: 0.0, y: 1.0)
+        borderLayer.endPoint = CGPoint(x: 1.0, y: 0.0)
+        
+        let strokePath = CGPath(roundedRect: cardRect.insetBy(dx: 1.0, dy: 1.0),
+                                cornerWidth: cornerRadius,
+                                cornerHeight: cornerRadius,
+                                transform: nil)
+        
+        borderShapeMask.path = strokePath
+        borderShapeMask.fillColor = nil
+        borderShapeMask.strokeColor = NSColor.black.cgColor
+        borderShapeMask.lineWidth = 2.0
+        borderShapeMask.frame = cardRect
+        
+        borderLayer.mask = borderShapeMask
+        borderOverlayView.layer?.addSublayer(borderLayer)
     }
     
     private func loadThumbnail() {
@@ -304,7 +553,7 @@ public final class FloatingCardView: NSView, NSDraggingSource {
         
         let request = QLThumbnailGenerator.Request(
             fileAt: fileURL,
-            size: CGSize(width: 320, height: 320),
+            size: CGSize(width: 340, height: 340),
             scale: NSScreen.main?.backingScaleFactor ?? 2.0,
             representationTypes: .thumbnail
         )
@@ -325,14 +574,16 @@ public final class FloatingCardView: NSView, NSDraggingSource {
         onClose?()
     }
     
-    // Only intercept mouse events that actually land inside the rotated card container!
+    // Pass clicks through the transparent neon aura outside the card
     public override func hitTest(_ point: NSPoint) -> NSView? {
         let pointInCard = cardContainer.convert(point, from: self)
         if !cardContainer.bounds.contains(pointInCard) {
-            return nil // Transparent padding: clicks pass directly through to underlying apps!
+            return nil
         }
-        
         let hit = super.hitTest(point)
+        if hit === borderOverlayView {
+            return self
+        }
         return hit ?? self
     }
     
@@ -362,7 +613,7 @@ public final class FloatingCardView: NSView, NSDraggingSource {
             return
         }
         
-        // Start Native macOS File Drag directly to Finder / Desktop / Apps!
+        // Native macOS File Drag directly to Finder / Desktop / Apps
         let distance = hypot(event.locationInWindow.x - initialMouseLocation.x, event.locationInWindow.y - initialMouseLocation.y)
         if distance > 4.0 {
             startFileDrag(with: event)

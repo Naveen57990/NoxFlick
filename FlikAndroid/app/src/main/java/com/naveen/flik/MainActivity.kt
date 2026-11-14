@@ -2,6 +2,7 @@ package com.naveen.flik
 
 import android.annotation.SuppressLint
 import android.graphics.ImageDecoder
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -34,6 +35,17 @@ class MainActivity : AppCompatActivity() {
     private var selectedDevice: DiscoveredMac? = null
     private var selectedUri: Uri? = null
     private var isTransferring = false
+    private var mediaPlayer: MediaPlayer? = null
+
+    private fun playFlickSound() {
+        try {
+            mediaPlayer?.release()
+            mediaPlayer = MediaPlayer.create(this, R.raw.flick_sound)
+            mediaPlayer?.start()
+        } catch (e: Exception) {
+            // Ignored
+        }
+    }
 
     private val photoPickerLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let { onFileSelected(it) }
@@ -121,6 +133,7 @@ class MainActivity : AppCompatActivity() {
 
                         // Launch card upward off screen along the throw trajectory
                         val flyX = currentX * 3.5f
+                        playFlickSound()
                         view.animate()
                             .translationX(flyX)
                             .translationY(-1800f)

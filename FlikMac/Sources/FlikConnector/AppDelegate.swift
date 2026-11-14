@@ -38,8 +38,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, FlikServerDeleg
     
     // MARK: - FlikServerDelegate
     public func serverDidReceiveFile(fileURL: URL, metadata: FlickMetadata) {
-        print("📥 Received file: \(metadata.fileName) (\(metadata.fileSize) bytes) from \(metadata.senderName)")
-        AudioServicesPlaySystemSound(1001) // Pop sound
+        NSLog("📥 [NoxFlick] serverDidReceiveFile: %@ (%lld bytes) from %@", metadata.fileName, metadata.fileSize, metadata.senderName)
         FloatingCardManager.shared.showCard(fileURL: fileURL, metadata: metadata)
     }
     

@@ -23,6 +23,12 @@ cp "$SCRIPT_DIR/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
 if [ -f "$SCRIPT_DIR/Resources/AppIcon.icns" ]; then
     cp "$SCRIPT_DIR/Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
 fi
+if [ -f "$SCRIPT_DIR/Resources/ArrivalChime.wav" ]; then
+    cp "$SCRIPT_DIR/Resources/ArrivalChime.wav" "$APP_DIR/Contents/Resources/ArrivalChime.wav"
+fi
+if [ -f "$SCRIPT_DIR/Resources/ArrivalChime.mp3" ]; then
+    cp "$SCRIPT_DIR/Resources/ArrivalChime.mp3" "$APP_DIR/Contents/Resources/ArrivalChime.mp3"
+fi
 
 echo "✍️ Ad-hoc code signing..."
 codesign -s - --force --deep "$APP_DIR"
