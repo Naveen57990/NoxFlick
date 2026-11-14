@@ -214,7 +214,10 @@ public final class FlikServer: @unchecked Sendable {
                             } else if path.starts(with: "/transfer") {
                                 // Prepare file streaming
                                 let rawFileName = headers["x-file-name"] ?? "received_\(Int(Date().timeIntervalSince1970)).dat"
-                                let cleanFileName = rawFileName.removingPercentEncoding ?? rawFileName
+                                let unescaped = rawFileName.removingPercentEncoding ?? rawFileName
+                                // Security: Sanitize path to prevent directory traversal
+                                let safeBaseName = (unescaped as NSString).lastPathComponent.replacingOccurrences(of: "/", with: "_")
+                                let cleanFileName = safeBaseName.isEmpty ? "received_\(Int(Date().timeIntervalSince1970)).dat" : safeBaseName
                                 let mime = headers["x-mime-type"] ?? "application/octet-stream"
                                 let angle = Double(headers["x-flick-angle"] ?? "0") ?? 0.0
                                 let velocity = Double(headers["x-flick-velocity"] ?? "1.5") ?? 1.5
