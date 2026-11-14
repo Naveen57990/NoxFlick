@@ -6,7 +6,7 @@ import AudioToolbox
 public final class SoundManager: @unchecked Sendable {
     public static let shared = SoundManager()
     
-    private var player: AVAudioPlayer?
+    private var activePlayers: [AVAudioPlayer] = []
     
     private init() {}
     
@@ -127,18 +127,24 @@ public final class SoundManager: @unchecked Sendable {
             }
             
             do {
-                self.player = try AVAudioPlayer(contentsOf: url)
-                self.player?.prepareToPlay()
+                let newPlayer = try AVAudioPlayer(contentsOf: url)
+                newPlayer.prepareToPlay()
                 
                 // Spatial stereo panning:
                 // -0.85 (extreme left speaker) ... 0.0 (center) ... +0.85 (extreme right speaker)
                 let panValue = Float(max(-0.85, min(0.85, aimX)))
-                self.player?.pan = panValue
+                newPlayer.pan = panValue
                 
                 // Dynamic capped volume scalar (strictly <= 50% effective max loudness)
                 let calculatedVolume = self.getCappedVolumeScalar()
-                self.player?.volume = calculatedVolume
-                self.player?.play()
+                newPlayer.volume = calculatedVolume
+                newPlayer.play()
+                
+                self.activePlayers.append(newPlayer)
+                // Retain up to 6 concurrent chimes for cascades, auto-purging finished
+                if self.activePlayers.count > 6 {
+                    self.activePlayers.removeFirst()
+                }
             } catch {
                 print("Failed to play arrival chime: \(error)")
                 AudioServicesPlaySystemSound(1001)

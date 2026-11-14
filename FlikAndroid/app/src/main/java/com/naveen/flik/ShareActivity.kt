@@ -207,12 +207,22 @@ class ShareActivity : AppCompatActivity() {
                 }
             } else {
                 var allSuccess = true
-                for (uri in sharedUris) {
-                    val success = transferClient.streamFile(mac, uri, angle, velocity, aimX)
+                val total = sharedUris.size
+                for (i in 0 until total) {
+                    val uri = sharedUris[i]
+                    val spread = if (total > 1) (i.toFloat() - (total - 1) / 2.0f) else 0f
+                    val fileAimX = (aimX + spread * 0.16f).coerceIn(-1.0f, 1.0f)
+                    val fileAngle = (angle + spread * 4.0f).coerceIn(-30f, 30f)
+                    
+                    val success = transferClient.streamFile(mac, uri, fileAngle, velocity, fileAimX)
                     if (!success) allSuccess = false
+                    
+                    if (total > 1 && i < total - 1) {
+                        kotlinx.coroutines.delay(120)
+                    }
                 }
                 if (allSuccess) {
-                    Toast.makeText(this@ShareActivity, "Delivered to ${mac.name}!", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@ShareActivity, "Delivered $total files to ${mac.name}!", Toast.LENGTH_SHORT).show()
                     finish()
                 } else {
                     binding.tvShareStatus.text = "❌ Some files failed to send"

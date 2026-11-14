@@ -33,7 +33,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var motionDetector: FlickMotionDetector
 
     private var selectedDevice: DiscoveredMac? = null
-    private var selectedUri: Uri? = null
+    private var selectedUris = mutableListOf<Uri>()
     private var isTransferring = false
     private var mediaPlayer: MediaPlayer? = null
 
@@ -47,12 +47,16 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private val photoPickerLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri?.let { onFileSelected(it) }
+    private val mediaPickerLauncher = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) {
+            onFilesSelected(uris)
+        }
     }
 
-    private val filePickerLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let { onFileSelected(it) }
+    private val filePickerLauncher = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) {
+            onFilesSelected(uris)
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -71,10 +75,12 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("ClickableViewAccessibility")
     private fun setupUI() {
         binding.btnPhotos.setOnClickListener {
-            photoPickerLauncher.launch("image/*")
+            // Pick multiple photos or videos
+            mediaPickerLauncher.launch(arrayOf("image/*", "video/*"))
         }
 
         binding.btnFiles.setOnClickListener {
+            // Pick multiple files of any type
             filePickerLauncher.launch(arrayOf("*/*"))
         }
 
@@ -88,7 +94,7 @@ class MainActivity : AppCompatActivity() {
         var velocityTracker: VelocityTracker? = null
 
         binding.flickCard.setOnTouchListener { view, event ->
-            if (isTransferring || selectedUri == null) return@setOnTouchListener false
+            if (isTransferring || selectedUris.isEmpty()) return@setOnTouchListener false
 
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -174,11 +180,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupSensors() {
         motionDetector = FlickMotionDetector(this) { angle, velocity, aimX ->
-            if (selectedUri != null && !isTransferring) {
+            if (selectedUris.isNotEmpty() && !isTransferring) {
                 performFlik(angle, velocity, aimX)
-            } else if (selectedUri == null) {
+            } else if (selectedUris.isEmpty()) {
                 runOnUiThread {
-                    Toast.makeText(this, "Select a photo or file first!", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Select photos or files first!", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -200,18 +206,30 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun onFileSelected(uri: Uri) {
-        selectedUri = uri
-        val name = getFileName(uri)
-        binding.tvFileName.text = name
+    private fun onFilesSelected(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        selectedUris.clear()
+        selectedUris.addAll(uris)
 
-        // Preview thumbnail
+        val count = selectedUris.size
+        val firstUri = selectedUris.first()
+        val firstName = getFileName(firstUri)
+
+        if (count == 1) {
+            binding.tvFileName.text = firstName
+            binding.tvStatus.text = "Ready to Nox Flick: $firstName"
+        } else {
+            binding.tvFileName.text = "📚 $count files ($firstName + ${count - 1} more)"
+            binding.tvStatus.text = "Ready to Nox Flick $count files"
+        }
+
+        // Preview thumbnail of first media
         try {
             val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                ImageDecoder.decodeBitmap(ImageDecoder.createSource(contentResolver, uri))
+                ImageDecoder.decodeBitmap(ImageDecoder.createSource(contentResolver, firstUri))
             } else {
                 @Suppress("DEPRECATION")
-                MediaStore.Images.Media.getBitmap(contentResolver, uri)
+                MediaStore.Images.Media.getBitmap(contentResolver, firstUri)
             }
             binding.ivPreview.setImageBitmap(bitmap)
             binding.ivPreview.visibility = View.VISIBLE
@@ -221,7 +239,6 @@ class MainActivity : AppCompatActivity() {
 
         binding.layoutEmptyState.visibility = View.GONE
         binding.layoutCardBottom.visibility = View.VISIBLE
-        binding.tvStatus.text = "Ready to Nox Flick: $name"
     }
 
     private fun performFlik(angle: Float, velocity: Float, aimX: Float = 0f) {
@@ -229,23 +246,45 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Searching for nearby Mac...", Toast.LENGTH_SHORT).show()
             return
         }
-        val uri = selectedUri ?: return
+        if (selectedUris.isEmpty()) return
 
         isTransferring = true
-        binding.tvStatus.text = "🚀 Flicking to ${mac.name}..."
+        val total = selectedUris.size
+        binding.tvStatus.text = if (total == 1) "🚀 Flicking to ${mac.name}..." else "🚀 Flicking $total files to ${mac.name}..."
 
         lifecycleScope.launch {
-            val success = transferClient.streamFile(mac, uri, angle, velocity, aimX)
+            var allSuccess = true
+            for (i in 0 until total) {
+                val uri = selectedUris[i]
+                val name = getFileName(uri)
+                if (total > 1) {
+                    binding.tvStatus.text = "🚀 Sending (${i + 1}/$total): $name..."
+                }
+
+                // Spatial cascade spread so cards land naturally fanned across screen
+                val spread = if (total > 1) (i.toFloat() - (total - 1) / 2.0f) else 0f
+                val fileAimX = (aimX + spread * 0.16f).coerceIn(-1.0f, 1.0f)
+                val fileAngle = (angle + spread * 4.0f).coerceIn(-30f, 30f)
+
+                val success = transferClient.streamFile(mac, uri, fileAngle, velocity, fileAimX)
+                if (!success) allSuccess = false
+
+                if (total > 1 && i < total - 1) {
+                    kotlinx.coroutines.delay(120) // Smooth cascade arrival delay
+                }
+            }
+
             isTransferring = false
-            if (success) {
-                binding.tvStatus.text = "🎉 Delivered to ${mac.name}!"
-                Toast.makeText(this@MainActivity, "Delivered!", Toast.LENGTH_SHORT).show()
-                selectedUri = null
+            if (allSuccess) {
+                val msg = if (total == 1) "Delivered to ${mac.name}!" else "All $total files delivered to ${mac.name}!"
+                binding.tvStatus.text = "🎉 $msg"
+                Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
+                selectedUris.clear()
                 binding.ivPreview.visibility = View.GONE
                 binding.layoutCardBottom.visibility = View.GONE
                 binding.layoutEmptyState.visibility = View.VISIBLE
             } else {
-                binding.tvStatus.text = "❌ Transfer failed"
+                binding.tvStatus.text = "❌ Some transfers failed"
                 Toast.makeText(this@MainActivity, "Transfer failed", Toast.LENGTH_SHORT).show()
             }
         }

@@ -278,6 +278,13 @@ public final class FloatingCardWindow: NSPanel {
     }
 }
 
+// MARK: - Non-interactive Overlay (Click-Through)
+private final class NonInteractiveOverlayView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        return nil // Mouse clicks pass completely through to buttons and views below!
+    }
+}
+
 // MARK: - Premium Floating Card View with Multi-Tier Neon Glow
 public final class FloatingCardView: NSView, NSDraggingSource {
     public weak var cardWindow: FloatingCardWindow?
@@ -292,7 +299,7 @@ public final class FloatingCardView: NSView, NSDraggingSource {
     private let glowBackdropView = NSView()
     private let cardContainer = NSView()
     private let glassEffectView = NSVisualEffectView()
-    private let borderOverlayView = NSView()
+    private let borderOverlayView = NonInteractiveOverlayView()
     private let borderLayer = CAGradientLayer()
     private let borderShapeMask = CAShapeLayer()
     
@@ -574,22 +581,34 @@ public final class FloatingCardView: NSView, NSDraggingSource {
         onClose?()
     }
     
-    // Pass clicks through the transparent neon aura outside the card
+    // Pass clicks through the transparent neon aura outside the card, and prioritize closeButton
     public override func hitTest(_ point: NSPoint) -> NSView? {
         let pointInCard = cardContainer.convert(point, from: self)
         if !cardContainer.bounds.contains(pointInCard) {
             return nil
         }
-        let hit = super.hitTest(point)
-        if hit === borderOverlayView {
-            return self
+        
+        // Priority 1: Instant reliable hit testing for close button (✕)
+        let pointInClose = closeButton.convert(point, from: self)
+        if closeButton.bounds.insetBy(dx: -6, dy: -6).contains(pointInClose) {
+            return closeButton
         }
+        
+        let hit = super.hitTest(point)
         return hit ?? self
     }
     
     // MARK: - Native Dragging (NSDraggingSource)
     public override func mouseDown(with event: NSEvent) {
         let pointInView = convert(event.locationInWindow, from: nil)
+        
+        // Priority 1: Direct dismissal if close button was clicked
+        let pointInClose = closeButton.convert(pointInView, from: self)
+        if closeButton.bounds.insetBy(dx: -6, dy: -6).contains(pointInClose) {
+            handleClose()
+            return
+        }
+        
         let pointInCard = cardContainer.convert(pointInView, from: self)
         let pointInHeader = headerView.convert(pointInCard, from: cardContainer)
         
