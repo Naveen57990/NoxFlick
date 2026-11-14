@@ -34,14 +34,28 @@ public final class StatusBarController: NSObject, @unchecked Sendable {
             guard let self = self else { return }
             let menu = NSMenu()
             
-            let headerItem = NSMenuItem(title: "⚡ Nox Flick", action: nil, keyEquivalent: "")
+            let headerItem = NSMenuItem(title: "⚡ NoxFlick", action: nil, keyEquivalent: "")
             headerItem.isEnabled = false
             menu.addItem(headerItem)
             
-            let status = FlikServer.shared.isRunning ? "Ready (Port \(FlikServer.shared.port))" : "Starting..."
+            let status = FlikServer.shared.isRunning ? "Online (Port \(FlikServer.shared.port))" : "Paused / Offline"
             let statusItem = NSMenuItem(title: "Status: \(status)", action: nil, keyEquivalent: "")
             statusItem.isEnabled = false
             menu.addItem(statusItem)
+            
+            menu.addItem(NSMenuItem.separator())
+            
+            let showWindow = NSMenuItem(title: "Open NoxFlick Panel...", action: #selector(self.showWindowClicked), keyEquivalent: "p")
+            showWindow.target = self
+            menu.addItem(showWindow)
+            
+            let togglePower = NSMenuItem(
+                title: FlikServer.shared.isRunning ? "Turn Receiver OFF" : "Turn Receiver ON",
+                action: #selector(self.togglePowerClicked),
+                keyEquivalent: "s"
+            )
+            togglePower.target = self
+            menu.addItem(togglePower)
             
             menu.addItem(NSMenuItem.separator())
             
@@ -66,6 +80,21 @@ public final class StatusBarController: NSObject, @unchecked Sendable {
             
             self.statusItem?.menu = menu
         }
+    }
+    
+    @objc private func showWindowClicked() {
+        ControlWindowController.shared.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    
+    @objc private func togglePowerClicked() {
+        if FlikServer.shared.isRunning {
+            FlikServer.shared.stop()
+        } else {
+            FlikServer.shared.start()
+        }
+        rebuildMenu()
+        ControlWindowController.shared.updateStatusUI()
     }
     
     @objc private func dismissAllClicked() {
