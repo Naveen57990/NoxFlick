@@ -7,8 +7,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, FlikServerDeleg
     public func applicationDidFinishLaunching(_ notification: Notification) {
         print("🚀 NoxFlick initializing...")
         
-        // Full native macOS app with Dock presence & Window
-        NSApp.setActivationPolicy(.regular)
+        // Menu bar accessory app (no Dock icon)
+        NSApp.setActivationPolicy(.accessory)
         
         // Setup menu bar controller
         StatusBarController.shared.setup()
@@ -17,17 +17,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, FlikServerDeleg
         FlikServer.shared.delegate = self
         FlikServer.shared.start()
         
-        // Display Control Panel window
-        ControlWindowController.shared.showWindow(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        
-        print("✨ NoxFlick ready!")
+        print("✨ NoxFlick ready in menu bar!")
     }
     
     public func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag {
-            ControlWindowController.shared.showWindow(nil)
-        }
         return true
     }
     

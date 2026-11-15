@@ -162,6 +162,7 @@ public final class ControlWindowController: NSWindowController, NSWindowDelegate
         super.init(window: window)
         window.delegate = self
         setupUI(in: window)
+        window.orderOut(nil)
     }
     
     required init?(coder: NSCoder) {
